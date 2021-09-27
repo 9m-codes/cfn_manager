@@ -147,13 +147,14 @@ done
 
 STACK_NAME="${STACK_NAME_INPUT}"
 
-
 if [ "${ENVIRONMENT}" == "" ] && [ "${COMMAND}" != "list" ]; then
   echo ""
   echo "Environment is required."
   echo ""
   USAGE
   exit
+else
+  STACK_NAME="${STACK_NAME_INPUT}"
 fi
 
 if [ "${ENVIRONMENT}" == "prod" ] && [ "${COMMAND}" == "delete" ]; then
@@ -165,7 +166,7 @@ if [ "${ENVIRONMENT}" == "prod" ] && [ "${COMMAND}" == "delete" ]; then
 fi
 
 if [ "${SERVICE}" == "" ]; then
- if [ "${COMMAND}" != "list" || "${COMMAND}" != "assume" ]; then
+ if [ "${COMMAND}" != "list" ] && [ "${COMMAND}" != "assume" ]; then
     echo ""
     echo "The command '${COMMAND}' require valid stack name."
     echo "Only 'list' and 'assume' command can run without stack name."
@@ -180,9 +181,51 @@ echo "Stack Name: ${STACK_NAME}"
 echo "Environment: ${ENVIRONMENT}"
 echo "Environment Tag: ${ENVIRONMENT_TAG}"
 
+
+
+declare -A ACCOUNT_IDS
+ACCOUNT_IDS=([shared]="555555555555" [dev]="666666666666" [uat]="777777777777" [prod]="888888888888")
+
+if [ "${ENVIRONMENT}" != "" ]; then
+  if [ "${ACCOUNT_IDS[${ENVIRONMENT}]}" != "" ];then
+    ACCOUNT_ID="${ACCOUNT_IDS[${ENVIRONMENT}]}"
+    DEFAULT_ENVIRONMENT="${ENVIRONMENT}"
+  else
+    DEFAULT_ENVIRONMENT="dev"
+    ACCOUNT_ID="${ACCOUNT_IDS[${DEFAULT_ENVIRONMENT}]}"
+  fi
+  STS_PROFILE="devops-${DEFAULT_ENVIRONMENT}"
+else
+  STS_PROFILE="devops-dev"
+fi
+
+STS_MAIN_PROFILE="devops-main"
+
+ASSUME_ROLE() {
+  export AWS_PROFILE="${STS_MAIN_PROFILE}"
+  export AWS_REGION="${DEFAULT_REGION}"
+  ROLE_ARN="arn:aws:iam::${ACCOUNT_ID}:role/Admin"
+  ROLE_SESSION_NAME="${STS_PROFILE}-session"
+  PROFILE_NAME="${STS_PROFILE}"
+
+  TEMP_ROLE=$(aws sts assume-role --role-arn ${ROLE_ARN} --role-session-name ${ROLE_SESSION_NAME})
+
+  export AWS_ACCESS_KEY_ID=$(echo ${TEMP_ROLE} | jq -r .Credentials.AccessKeyId)
+  export AWS_SECRET_ACCESS_KEY=$(echo ${TEMP_ROLE} | jq -r .Credentials.SecretAccessKey)
+  export AWS_SESSION_TOKEN=$(echo ${TEMP_ROLE} | jq -r .Credentials.SessionToken)
+
+  aws configure set profile.${PROFILE_NAME}.aws_access_key_id ${AWS_ACCESS_KEY_ID}
+  aws configure set profile.${PROFILE_NAME}.aws_secret_access_key ${AWS_SECRET_ACCESS_KEY}
+  aws configure set profile.${PROFILE_NAME}.aws_session_token ${AWS_SESSION_TOKEN}
+
+  aws --profile ${PROFILE_NAME} sts get-caller-identity
+}
+
+
 DEFAULT_REGION="ap-southeast-2"
 AWS_CLI=/usr/local/bin/aws
-alias cfn="AWS_REGION=${DEFAULT_REGION} ${AWS_CLI} cloudformation"
+alias cfn="AWS_REGION=${DEFAULT_REGION} AWS_PROFILE=${STS_PROFILE} ${AWS_CLI} cloudformation"
+
 
 alias list_stack="cfn list-stacks --stack-status-filter \
   CREATE_IN_PROGRESS \
@@ -212,21 +255,25 @@ alias list_stack="cfn list-stacks --stack-status-filter \
 if [ "${COMMAND}" == "list" ]; then
   if [ "${ENVIRONMENT}" != "" ] && [ "${SERVICE}" != "" ]; then
     STACK_EXIST_CHECK=$(list_stack | tr '\t' '\n' | grep "${ENVIRONMENT}" | grep "${SERVICE}")
+    DEFAULT_ENVIRONMENT="${ENVIRONMENT}"
   elif [ "${ENVIRONMENT}" != "" ]; then
     STACK_EXIST_CHECK=$(list_stack | tr '\t' '\n' | grep "${ENVIRONMENT}")
+    DEFAULT_ENVIRONMENT="${ENVIRONMENT}"
   elif [ "${SERVICE}" != "" ]; then
     STACK_EXIST_CHECK=$(list_stack | tr '\t' '\n' | grep "${SERVICE}")
+    DEFAULT_ENVIRONMENT="dev"
   else
     STACK_EXIST_CHECK=$(list_stack | tr '\t' '\n')
+    DEFAULT_ENVIRONMENT="dev"
   fi
 
   if [ "${STACK_EXIST_CHECK}" != "" ]; then
-    echo "[FOUND]:"
+    echo "[FOUND]: Stack found in '${DEFAULT_ENVIRONMENT}'"
     for stack in ${STACK_EXIST_CHECK}; do
       echo "  --> ${stack}"
     done
   else
-    echo "[NOT FOUND]: Stack not found."
+    echo "[NOT FOUND]: Stack not found in '${DEFAULT_ENVIRONMENT}'"
   fi
 fi
 
@@ -238,43 +285,6 @@ if [ "${COMMAND}" == "exist" ]; then
     echo "[NOT FOUND]: ${STACK_NAME}"
   fi
 fi
-
-declare -A ACCOUNT_IDS
-ACCOUNT_IDS=([shared]="888888888888" [dev]="999999999999" [uat]="666666666666" [prod]="555555555555")
-
-if [ "${ENVIRONMENT}" != "" ]; then
-  if [ "${ACCOUNT_IDS[${ENVIRONMENT}]}" != "" ];then
-    ACCOUNT_ID="${ACCOUNT_IDS[${ENVIRONMENT}]}"
-    STS_ENVIRONMENT="${ENVIRONMENT}"
-  else
-    STS_ENVIRONMENT="dev"
-    ACCOUNT_ID="${ACCOUNT_IDS[${STS_ENVIRONMENT}]}"
-  fi
-fi
-
-
-STS_MAIN_PROFILE="aws-main"
-
-ASSUME_ROLE() {
-  export AWS_PROFILE="${STS_MAIN_PROFILE}"
-  export AWS_REGION="${DEFAULT_REGION}"
-  ROLE_ARN="arn:aws:iam::${ACCOUNT_ID}:role/FullAccessRole"
-  ROLE_SESSION_NAME="aws-${STS_ENVIRONMENT}-session"
-  PROFILE_NAME="aws-${STS_ENVIRONMENT}"
-
-  TEMP_ROLE=$(aws sts assume-role --role-arn ${ROLE_ARN} --role-session-name ${ROLE_SESSION_NAME})
-
-  export AWS_ACCESS_KEY_ID=$(echo ${TEMP_ROLE} | jq -r .Credentials.AccessKeyId)
-  export AWS_SECRET_ACCESS_KEY=$(echo ${TEMP_ROLE} | jq -r .Credentials.SecretAccessKey)
-  export AWS_SESSION_TOKEN=$(echo ${TEMP_ROLE} | jq -r .Credentials.SessionToken)
-
-  aws configure set profile.${PROFILE_NAME}.aws_access_key_id ${AWS_ACCESS_KEY_ID}
-  aws configure set profile.${PROFILE_NAME}.aws_secret_access_key ${AWS_SECRET_ACCESS_KEY}
-  aws configure set profile.${PROFILE_NAME}.aws_session_token ${AWS_SESSION_TOKEN}
-
-  aws --profile ${PROFILE_NAME} sts get-caller-identity
-}
-
 
 
 CFN_TEMPLATES_DIR=${SCRIPT_DIR}/templates/${ENVIRONMENT}/${SERVICE}
